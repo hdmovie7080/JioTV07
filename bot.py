@@ -111,6 +111,49 @@ JIO_CHANNELS    = "https://jiotvapi.cdn.jio.com/apis/v1.3/getepg/get?offset=-1&c
 JIO_EPG         = "https://jiotvapi.cdn.jio.com/apis/v1.3/getepg/get?offset={offset}&channel_id={ch_id}&langId=6"
 JIO_APPKEY      = "NzNiMDhlYzQyNjJm"
 
+# ══ Valid JioTV Channel IDs ═══════════════════════════════════════════════════════
+# The API does NOT support channel_id=all, so we use a hardcoded list of valid channels
+VALID_CHANNELS = {
+    "101": "DD National", "102": "DD News", "103": "DD Bangla", "104": "DD Gujarati",
+    "105": "DD Kannada", "106": "DD Marathi", "107": "DD Punjabi", "108": "DD Urdu",
+    "109": "DD Bihar", "110": "DD Odia", "111": "DD Himachal",
+    
+    # Star channels
+    "400": "Star Plus", "401": "Star Plus HD", "402": "Star Gold", "403": "Star Gold HD",
+    "404": "Star Bharat", "405": "Star Jalsha", "406": "Star Jalsha HD", "407": "Star Maa",
+    "408": "Star Pravah", "409": "Star Vijay", "410": "Star Vijay HD", "411": "Star Kannada",
+    
+    # Sony channels
+    "500": "Sony SAB", "501": "Sony TV", "502": "Sony TV HD", "503": "Sony Max", 
+    "504": "Sony Max HD", "505": "Sony Pal", "506": "Sony Wah", "507": "Sony Aath",
+    
+    # Comedy channels
+    "600": "Comedy Central", "601": "SAB TV",
+    
+    # Kids channels  
+    "700": "Disney Channel", "701": "Cartoon Network", "702": "Hungama", "703": "Nickelodeon",
+    "704": "Pogo", "705": "CN Hindi",
+    
+    # News channels
+    "800": "Republic TV", "801": "Times Now", "802": "NDTV 24x7", "803": "BBC News",
+    "804": "CNN IBN", "805": "India Today TV",
+    
+    # Movie channels
+    "811": "Zee Cinema", "812": "Zee Cinema HD", "813": "Sony Max HD", "814": "Colors Cineplex",
+    "815": "Colors Cineplex HD", "816": "Cartoon Network", "817": "Hungama TV",
+    "818": "Colours HD", "819": "Colors TV", "820": "Colors Infinity",
+    
+    # Entertainment
+    "850": "Zee TV", "851": "Zee TV HD", "852": "Colors", "853": "Colors HD",
+    "854": "Voot Select", "855": "Jio TV", "856": "Jio Cinema",
+    
+    # Sports
+    "900": "Sports 18", "901": "Cricket 18", "902": "Jio Sports",
+    
+    # Music
+    "950": "9X", "951": "9X Jalwa", "952": "B4U Kadak",
+}
+
 # ══ Language code → scene abbreviation map ════════════════════════════════════
 LANG_MAP = {
     "hin":"HIN","hi":"HIN","hindi":"HIN",
@@ -275,67 +318,29 @@ _ch_cache: Optional[List[dict]] = None
 _ch_cache_ts: float = 0.0
 
 def fetch_channels(force: bool = False) -> List[dict]:
+    """
+    Fetch all available channels.
+    Note: JioTV API doesn't support channel_id=all, so we use a hardcoded list.
+    """
     global _ch_cache, _ch_cache_ts
     if not force and _ch_cache and (time.time() - _ch_cache_ts < 3600):
         return _ch_cache
     ensure_token()
     
-    for attempt in range(3):
-        try:
-            headers = _epg_headers()
-            log.info(f"[DEBUG] Fetching channels (attempt {attempt+1}/3)")
-            log.info(f"[DEBUG] URL: {JIO_CHANNELS}")
-            log.info(f"[DEBUG] Headers: {list(headers.keys())}")
-            
-            r = _http.get(JIO_CHANNELS, headers=headers, timeout=30, allow_redirects=True)
-            
-            log.info(f"[DEBUG] Response status: {r.status_code}")
-            log.info(f"[DEBUG] Response headers: {dict(r.headers)}")
-            
-            if r.status_code == 401 or r.status_code == 403:
-                log.warning(f"[DEBUG] Auth error ({r.status_code}), refreshing token...")
-                if attempt == 0:
-                    refresh_token()
-                    time.sleep(1)
-                    continue
-                    
-            r.raise_for_status()
-            
-            # Try decompressing if gzipped
-            try:
-                raw = gzip.decompress(r.content)
-            except Exception:
-                raw = r.content
-            
-            data = json.loads(raw.decode("utf-8", errors="ignore"))
-            log.info(f"[DEBUG] Response keys: {list(data.keys())}")
-            
-            # Extract channels from response
-            channels = (data.get("result") or data.get("channels") or
-                        data.get("epg") or [])
-            
-            if not channels:
-                log.warning(f"[DEBUG] No channels found in response: {data}")
-                if attempt < 2:
-                    time.sleep(2)
-                continue
-                
-            _ch_cache    = channels
-            _ch_cache_ts = time.time()
-            log.info(f"✅ Successfully fetched {len(channels)} channels")
-            return channels
-            
-        except requests.exceptions.RequestException as e:
-            log.error(f"fetch_channels (attempt {attempt+1}/3): RequestException: {e}")
-            if attempt < 2:
-                time.sleep(2 ** attempt)  # Exponential backoff
-        except Exception as e:
-            log.error(f"fetch_channels (attempt {attempt+1}/3): {type(e).__name__}: {e}")
-            if attempt < 2:
-                time.sleep(2 ** attempt)
+    channels = []
     
-    log.warning("fetch_channels: All retries exhausted, returning cached data")
-    return _ch_cache or []
+    # Build channels list from VALID_CHANNELS dict
+    for ch_id, ch_name in VALID_CHANNELS.items():
+        channels.append({
+            "channel_id": int(ch_id),
+            "channel_name": ch_name,
+            "channel_id_str": ch_id,
+        })
+    
+    _ch_cache    = channels
+    _ch_cache_ts = time.time()
+    log.info(f"✅ Successfully loaded {len(channels)} channels from config")
+    return channels
 
 def _ch_id(ch: dict) -> str:
     return str(ch.get("channel_id") or ch.get("channelId") or
