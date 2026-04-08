@@ -107,7 +107,7 @@ _CREDS: Dict = {
 # ══ JioTV API URLs ════════════════════════════════════════════════════════════
 JIO_PLAYBACK    = "https://jiotvapi.media.jio.com/playback/apis/v1/geturl?langId=6"
 JIO_REFRESH     = "https://auth.media.jio.com/tokenservice/apis/v1/refreshtoken?langId=6"
-JIO_CHANNELS    = "https://jiotvapi.cdn.jio.com/apis/v1.3/getepg/get?offset=-1&channel_id=all"
+JIO_CHANNELS    = "https://jiotvapi.cdn.jio.com/apis/v1.3/getepg/get?offset=-1&channel_id=all&langId=6"
 JIO_EPG         = "https://jiotvapi.cdn.jio.com/apis/v1.3/getepg/get?offset={offset}&channel_id={ch_id}&langId=6"
 JIO_APPKEY      = "NzNiMDhlYzQyNjJm"
 
@@ -212,14 +212,23 @@ def _jio_headers(channel_id: str = "144") -> dict:
 
 def _epg_headers() -> dict:
     return {
-        "Host":            "jiotvapi.cdn.jio.com",
-        "user-agent":      "okhttp/4.12.13",
-        "Accept-Encoding": "gzip",
-        "accesstoken":     _CREDS["authToken"],
-        "ssotoken":        _CREDS["ssoToken"],
-        "subscriberid":    _CREDS["subscriberId"],
-        "deviceId":        _CREDS["deviceId"],
-        "uniqueId":        _CREDS["uniqueId"],
+        "Host":               "jiotvapi.cdn.jio.com",
+        "Connection":         "keep-alive",
+        "User-Agent":         "okhttp/4.12.13",
+        "Accept":             "*/*",
+        "Accept-Encoding":    "gzip, deflate",
+        "Accept-Language":    "en-US,en;q=0.9",
+        "Cache-Control":      "no-cache",
+        "Pragma":             "no-cache",
+        "accesstoken":        _CREDS["authToken"],
+        "ssotoken":           _CREDS["ssoToken"],
+        "subscriberid":       _CREDS["subscriberId"],
+        "deviceid":           _CREDS["deviceId"],
+        "uniqueid":           _CREDS["uniqueId"],
+        "versioncode":        "331",
+        "os":                 "android",
+        "devicetype":         "phone",
+        "appname":            "RJIL_JioTV",
     }
 
 def refresh_token() -> bool:
@@ -274,31 +283,58 @@ def fetch_channels(force: bool = False) -> List[dict]:
     for attempt in range(3):
         try:
             headers = _epg_headers()
-            r = _http.get(JIO_CHANNELS, headers=headers, timeout=25)
+            log.info(f"[DEBUG] Fetching channels (attempt {attempt+1}/3)")
+            log.info(f"[DEBUG] URL: {JIO_CHANNELS}")
+            log.info(f"[DEBUG] Headers: {list(headers.keys())}")
+            
+            r = _http.get(JIO_CHANNELS, headers=headers, timeout=30, allow_redirects=True)
+            
+            log.info(f"[DEBUG] Response status: {r.status_code}")
+            log.info(f"[DEBUG] Response headers: {dict(r.headers)}")
             
             if r.status_code == 401 or r.status_code == 403:
+                log.warning(f"[DEBUG] Auth error ({r.status_code}), refreshing token...")
                 if attempt == 0:
                     refresh_token()
+                    time.sleep(1)
                     continue
                     
             r.raise_for_status()
-            try:    raw = gzip.decompress(r.content)
-            except Exception: raw = r.content
+            
+            # Try decompressing if gzipped
+            try:
+                raw = gzip.decompress(r.content)
+            except Exception:
+                raw = r.content
+            
             data = json.loads(raw.decode("utf-8", errors="ignore"))
-            # Response can have different keys depending on JioTV API version
+            log.info(f"[DEBUG] Response keys: {list(data.keys())}")
+            
+            # Extract channels from response
             channels = (data.get("result") or data.get("channels") or
                         data.get("epg") or [])
+            
+            if not channels:
+                log.warning(f"[DEBUG] No channels found in response: {data}")
+                if attempt < 2:
+                    time.sleep(2)
+                continue
+                
             _ch_cache    = channels
             _ch_cache_ts = time.time()
-            log.info(f"✅ Fetched {len(channels)} channels")
+            log.info(f"✅ Successfully fetched {len(channels)} channels")
             return channels
-        except Exception as e:
-            log.error(f"fetch_channels (attempt {attempt+1}/3): {e}")
+            
+        except requests.exceptions.RequestException as e:
+            log.error(f"fetch_channels (attempt {attempt+1}/3): RequestException: {e}")
             if attempt < 2:
-                time.sleep(2)
-            continue
+                time.sleep(2 ** attempt)  # Exponential backoff
+        except Exception as e:
+            log.error(f"fetch_channels (attempt {attempt+1}/3): {type(e).__name__}: {e}")
+            if attempt < 2:
+                time.sleep(2 ** attempt)
     
-    log.warning("fetch_channels: All retries failed, returning cached data")
+    log.warning("fetch_channels: All retries exhausted, returning cached data")
     return _ch_cache or []
 
 def _ch_id(ch: dict) -> str:
@@ -358,24 +394,37 @@ def fetch_epg(channel_id: str, offset: int = 0) -> Optional[dict]:
             ensure_token()
             url = JIO_EPG.format(offset=offset, ch_id=channel_id)
             headers = _epg_headers()
-            r   = _http.get(url, headers=headers, timeout=20)
+            
+            log.info(f"[DEBUG] Fetching EPG ch={channel_id} offset={offset} (attempt {attempt+1}/2)")
+            log.info(f"[DEBUG] URL: {url}")
+            
+            r = _http.get(url, headers=headers, timeout=30, allow_redirects=True)
+            
+            log.info(f"[DEBUG] Response status: {r.status_code}")
             
             if r.status_code == 401 or r.status_code == 403:
+                log.warning(f"[DEBUG] Auth error ({r.status_code}), refreshing...")
                 if attempt == 0:
                     refresh_token()
+                    time.sleep(1)
                     continue
                     
             r.raise_for_status()
-            try:    raw = gzip.decompress(r.content)
-            except Exception: raw = r.content
+            
+            try:
+                raw = gzip.decompress(r.content)
+            except Exception:
+                raw = r.content
+                
             data = json.loads(raw.decode("utf-8", errors="ignore"))
-            log.info(f"✅ Fetched EPG for channel {channel_id} (offset={offset})")
+            log.info(f"✅ Fetched EPG for channel {channel_id} (offset={offset}, {len(data.get('epg', []))} shows)")
             return data
+            
         except Exception as e:
-            log.error(f"fetch_epg ch={channel_id} offset={offset} (attempt {attempt+1}/2): {e}")
+            log.error(f"fetch_epg ch={channel_id} offset={offset} (attempt {attempt+1}/2): {type(e).__name__}: {e}")
             if attempt == 0:
                 time.sleep(1)
-            continue
+                
     return None
 
 # ══ Filename builder ══════════════════════════════════════════════════════════
@@ -1426,7 +1475,7 @@ async def on_cb(client, cb: CallbackQuery):
                                        callback_data=f"cu_ch:{mid}:{c['id']}")]
                 for c in chs[:PAGE_SIZE]]
         btns.append([
-            InlineKeyboardButton("⬅️ Back",  callback_data=f"cu_back:{mid}"),
+            InlineKeyboardButton("��️ Back",  callback_data=f"cu_back:{mid}"),
             InlineKeyboardButton("❌ Close", callback_data=f"close:{mid}"),
         ])
         await cb.message.edit(
@@ -1512,7 +1561,7 @@ async def on_cb(client, cb: CallbackQuery):
             parse_mode=enums.ParseMode.HTML)
         return
 
-    # ─────────────────────────────────────────────────────
+    # ───────────────────────────────────────────────��─────
     # PROGRAM LIST PAGINATION
     # ─────────────────────────────────────────────────────
     if data.startswith("ppage:"):
